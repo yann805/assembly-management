@@ -1,0 +1,376 @@
+// =====================================================================
+// Prisma Schema — Système de gestion des assemblées et trésorerie
+// PostgreSQL (Supabase) — MVP v1.0
+// =====================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =====================================================================
+// A. AUTHENTIFICATION ET PERMISSIONS
+// =====================================================================
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  memberId     String?  @unique @map("member_id") @db.Uuid
+  fullName     String  @map("full_name")
+  email        String?  @unique
+  phone        String?  @unique
+  passwordHash String?  @map("password_hash")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  member             Member?                @relation(fields: [memberId], references: [id], onDelete: SetNull)
+  roleAssignments    UserRoleAssignment[]
+  assignedRoles      UserRoleAssignment[]   @relation("AssignedByUser")
+  assignedResponsibilities AssemblyResponsibility[]
+  recordedContributions Contribution[]      @relation("RecordedByUser")
+  submittedReports   MonthlyReport[]       @relation("SubmittedByUser")
+  confirmedReports   ReportConfirmation[]   @relation("ConfirmedByUser")
+  auditLogs          AuditLog[]
+
+  @@map("users")
+}
+
+model Role {
+  id          String @id @default(uuid()) @db.Uuid
+  name        String @unique
+  description String?
+
+  userAssignments UserRoleAssignment[]
+
+  @@map("roles")
+}
+
+model UserRoleAssignment {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  roleId      String   @map("role_id") @db.Uuid
+  assemblyId  String?  @map("assembly_id") @db.Uuid
+  assignedBy  String   @map("assigned_by") @db.Uuid
+  assignedAt  DateTime @default(now()) @map("assigned_at")
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      Role      @relation(fields: [roleId], references: [id])
+  assembly  Assembly? @relation(fields: [assemblyId], references: [id], onDelete: Cascade)
+  assigner  User      @relation("AssignedByUser", fields: [assignedBy], references: [id])
+
+  @@unique([userId, roleId, assemblyId])
+  @@index([userId])
+  @@index([assemblyId])
+  @@map("user_role_assignments")
+}
+
+// =====================================================================
+// B. GESTION DES ASSEMBLÉES
+// =====================================================================
+
+model Assembly {
+  id            String   @id @default(uuid()) @db.Uuid
+  name          String
+  location      String?
+  creationDate  DateTime @map("creation_date") @db.Date
+  status        String   @default("ACTIVE") // ACTIVE | INACTIVE
+  description   String?
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  memberships      AssemblyMembership[]
+  responsibilities AssemblyResponsibility[]
+  contributions    Contribution[]
+  reports          MonthlyReport[]
+  roleAssignments  UserRoleAssignment[]
+  auditLogs        AuditLog[]
+
+  @@map("assemblies")
+}
+
+model AssemblyMembership {
+  id         String   @id @default(uuid()) @db.Uuid
+  assemblyId String   @map("assembly_id") @db.Uuid
+  memberId   String   @map("member_id") @db.Uuid
+  joinedAt   DateTime @map("joined_at") @db.Date
+  status     String   @default("ACTIVE") // ACTIVE | INACTIVE
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  assembly        Assembly                @relation(fields: [assemblyId], references: [id], onDelete: Cascade)
+  member          Member                  @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  responsibilities AssemblyResponsibility[]
+  contributions   Contribution[]
+  statistics      MemberMonthlyStatistic[]
+
+  @@unique([assemblyId, memberId, status])
+  @@index([assemblyId])
+  @@index([memberId])
+  @@map("assembly_memberships")
+}
+
+model AssemblyResponsibility {
+  id                 String    @id @default(uuid()) @db.Uuid
+  assemblyId         String    @map("assembly_id") @db.Uuid
+  membershipId       String    @map("membership_id") @db.Uuid
+  responsibilityType String    @map("responsibility_type") // LEADER | TREASURER
+  startDate          DateTime  @map("start_date") @db.Date
+  endDate            DateTime? @map("end_date") @db.Date
+  assignedBy         String    @map("assigned_by") @db.Uuid
+  isCurrent          Boolean   @default(true) @map("is_current")
+  createdAt          DateTime  @default(now()) @map("created_at")
+
+  assembly   Assembly          @relation(fields: [assemblyId], references: [id], onDelete: Cascade)
+  membership AssemblyMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  assigner   User              @relation(fields: [assignedBy], references: [id])
+
+  @@index([assemblyId, responsibilityType, isCurrent])
+  @@map("assembly_responsibilities")
+}
+
+// =====================================================================
+// C. GESTION DES MEMBRES
+// =====================================================================
+
+model Member {
+  id                      String    @id @default(uuid()) @db.Uuid
+  fullName                String    @map("full_name")
+  gender                  String?   // M | F
+  dateOfBirth             DateTime? @map("date_of_birth") @db.Date
+  conversionDate          DateTime? @map("conversion_date") @db.Date
+  waterBaptismDate        DateTime? @map("water_baptism_date") @db.Date
+  holySpiritBaptismDate   DateTime? @map("holy_spirit_baptism_date") @db.Date
+  maritalStatusId         String?   @map("marital_status_id") @db.Uuid
+  filiereId               String?   @map("filiere_id") @db.Uuid
+  levelId                 String?   @map("level_id") @db.Uuid
+  profession              String?
+  arrivalDate             DateTime  @map("arrival_date") @db.Date
+  status                  String    @default("ACTIVE") // ACTIVE | INACTIVE
+  createdAt               DateTime  @default(now()) @map("created_at")
+  updatedAt               DateTime  @updatedAt @map("updated_at")
+
+  user          User?
+  memberships    AssemblyMembership[]
+  contacts       MemberContact[]
+  maritalStatus  MaritalStatus?  @relation(fields: [maritalStatusId], references: [id])
+  filiere        Filiere?        @relation(fields: [filiereId], references: [id])
+  level          Level?          @relation(fields: [levelId], references: [id])
+
+  @@map("members")
+}
+
+model MemberContact {
+  id           String  @id @default(uuid()) @db.Uuid
+  memberId     String  @map("member_id") @db.Uuid
+  contactValue String  @map("contact_value")
+  contactType  String  @map("contact_type") // PHONE | EMAIL | ADDRESS
+  isPrimary    Boolean @default(false) @map("is_primary")
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@index([memberId])
+  @@map("member_contacts")
+}
+
+model MaritalStatus {
+  id      String  @id @default(uuid()) @db.Uuid
+  name    String  @unique
+  members Member[]
+
+  @@map("marital_statuses")
+}
+
+model Filiere {
+  id      String  @id @default(uuid()) @db.Uuid
+  name    String  @unique
+  members Member[]
+
+  @@map("filieres")
+}
+
+model Level {
+  id      String  @id @default(uuid()) @db.Uuid
+  name    String  @unique
+  members Member[]
+
+  @@map("levels")
+}
+
+// =====================================================================
+// D. GESTION DES RUBRIQUES
+// =====================================================================
+
+model OfferingCategory {
+  id          String    @id @default(uuid()) @db.Uuid
+  name        String    @unique
+  description String?
+  isActive    Boolean   @default(true) @map("is_active")
+  createdBy    String    @map("created_by") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  deletedAt   DateTime? @map("deleted_at")
+
+  allocations       ContributionAllocation[]
+  reportCategoryTotals MonthlyReportCategoryTotal[]
+
+  @@map("offering_categories")
+}
+
+// =====================================================================
+// E. GESTION DES CONTRIBUTIONS
+// =====================================================================
+
+model Contribution {
+  id              String    @id @default(uuid()) @db.Uuid
+  membershipId     String    @map("membership_id") @db.Uuid
+  paymentDate     DateTime  @map("payment_date") @db.Date
+  titheAmount      Decimal   @map("tithe_amount") @db.Decimal(14, 2)
+  offeringAmount  Decimal   @map("offering_amount") @db.Decimal(14, 2)
+  totalAmount     Decimal   @map("total_amount") @db.Decimal(14, 2)
+  recordedBy      String    @map("recorded_by") @db.Uuid
+  note            String?
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  membership  AssemblyMembership      @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  recorder    User                    @relation("RecordedByUser", fields: [recordedBy], references: [id])
+  allocations ContributionAllocation[]
+  assembly    Assembly                @relation(fields: [assemblyId], references: [id], onDelete: Cascade)
+
+  assemblyId String @map("assembly_id") @db.Uuid
+
+  @@index([membershipId])
+  @@index([paymentDate])
+  @@index([recordedBy])
+  @@index([assemblyId, paymentDate])
+  @@map("contributions")
+}
+
+model ContributionAllocation {
+  id             String  @id @default(uuid()) @db.Uuid
+  contributionId String  @map("contribution_id") @db.Uuid
+  categoryId     String  @map("category_id") @db.Uuid
+  amount         Decimal @db.Decimal(14, 2)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  contribution Contribution        @relation(fields: [contributionId], references: [id], onDelete: Cascade)
+  category     OfferingCategory    @relation(fields: [categoryId], references: [id])
+
+  @@index([contributionId])
+  @@index([categoryId])
+  @@map("contribution_allocations")
+}
+
+// =====================================================================
+// F. RAPPORTS MENSUELS
+// =====================================================================
+
+model MonthlyReport {
+  id                  String    @id @default(uuid()) @db.Uuid
+  assemblyId          String    @map("assembly_id") @db.Uuid
+  month               Int
+  year                Int
+  totalTithes         Decimal   @map("total_tithes") @db.Decimal(14, 2)
+  totalOfferings      Decimal   @map("total_offerings") @db.Decimal(14, 2)
+  totalAmount         Decimal   @map("total_amount") @db.Decimal(14, 2)
+  totalMembers        Int       @map("total_members")
+  contributingMembers Int      @map("contributing_members")
+  submittedBy        String    @map("submitted_by") @db.Uuid
+  submittedAt         DateTime? @map("submitted_at")
+  status              String    @default("DRAFT") // DRAFT | SUBMITTED | CONFIRMED
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  assembly       Assembly                       @relation(fields: [assemblyId], references: [id], onDelete: Cascade)
+  submitter      User                           @relation("SubmittedByUser", fields: [submittedBy], references: [id])
+  confirmations  ReportConfirmation[]
+  categoryTotals MonthlyReportCategoryTotal[]
+
+  @@unique([assemblyId, month, year, status])
+  @@index([assemblyId])
+  @@index([year, month])
+  @@map("monthly_reports")
+}
+
+model MonthlyReportCategoryTotal {
+  id                 String  @id @default(uuid()) @db.Uuid
+  reportId           String  @map("report_id") @db.Uuid
+  categoryId         String? @map("category_id") @db.Uuid
+  categoryNameSnapshot String @map("category_name_snapshot")
+  totalAmount        Decimal @map("total_amount") @db.Decimal(14, 2)
+
+  report   MonthlyReport     @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  category OfferingCategory? @relation(fields: [categoryId], references: [id])
+
+  @@index([reportId])
+  @@map("monthly_report_category_totals")
+}
+
+// =====================================================================
+// G. CONFIRMATION DE RÉCEPTION
+// =====================================================================
+
+model ReportConfirmation {
+  id              String   @id @default(uuid()) @db.Uuid
+  reportId        String   @unique @map("report_id") @db.Uuid
+  confirmedBy     String   @map("confirmed_by") @db.Uuid
+  reportedAmount  Decimal  @map("reported_amount") @db.Decimal(14, 2)
+  receivedAmount  Decimal  @map("received_amount") @db.Decimal(14, 2)
+  confirmedAt     DateTime @default(now()) @map("confirmed_at")
+  notes           String?
+
+  report    MonthlyReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  confirmer User          @relation("ConfirmedByUser", fields: [confirmedBy], references: [id])
+
+  @@map("report_confirmations")
+}
+
+// =====================================================================
+// H. FIDÉLITÉ ET STATISTIQUES
+// =====================================================================
+
+model MemberMonthlyStatistic {
+  id            String   @id @default(uuid()) @db.Uuid
+  membershipId  String   @map("membership_id") @db.Uuid
+  month         Int
+  year          Int
+  tithePaid     Decimal  @default(0) @map("tithe_paid") @db.Decimal(14, 2)
+  offeringPaid  Decimal  @default(0) @map("offering_paid") @db.Decimal(14, 2)
+  hasTithe      Boolean  @default(false) @map("has_tithe")
+  hasOffering   Boolean  @default(false) @map("has_offering")
+  calculatedAt  DateTime @default(now()) @map("calculated_at")
+
+  membership AssemblyMembership @relation(fields: [membershipId], references: [id])
+
+  @@unique([membershipId, month, year])
+  @@index([membershipId])
+  @@map("member_monthly_statistics")
+}
+
+// =====================================================================
+// I. JOURNALISATION ET AUDIT
+// =====================================================================
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  assemblyId  String?  @map("assembly_id") @db.Uuid
+  action      String
+  entityType  String   @map("entity_type")
+  entityId    String   @map("entity_id") @db.Uuid
+  oldValues   Json?    @map("old_values")
+  newValues   Json?    @map("new_values")
+  ipAddress   String?  @map("ip_address")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user     User      @relation(fields: [userId], references: [id])
+  assembly Assembly? @relation(fields: [assemblyId], references: [id])
+
+  @@index([userId])
+  @@index([assemblyId])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
